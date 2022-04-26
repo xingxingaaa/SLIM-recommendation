@@ -5,11 +5,14 @@ import math
 import numpy
 import pandas
 from concurrent.futures import ProcessPoolExecutor
+import copy
 
 # 以下两个包的import报错可以无视，只要相同目录下有slim.cp36-win_amd64.pyd和lfm.cp36-win_amd64.pyd这两个文件即可
+
 import lfm
 import slim
 
+pandas.set_option('display.max_columns', None)
 
 class Data:
     def __init__(self, dataset='ml-100k'):
@@ -514,6 +517,191 @@ class SLIM:
     def __get_recommendation(self):
         """
         得到所有用户的推荐物品列表。
+        :return: 推荐列表，下标i对应给用户i推荐的物品列表
+        """
+        # 得到训练集中每个用户所有有过正反馈物品集合
+        train_user_items = [set() for u in range(self.data.num_user)]
+        for user, item in self.data.train:
+            train_user_items[user].add(item)
+
+        AW = self.A.dot(self.W)
+
+        # 对每个用户推荐最多N个物品
+        recommendation = []
+        for user_AW, user_item_set in zip(AW, train_user_items):
+            recommendation.append(self.__recommend(user_AW, user_item_set))
+        return recommendation
+
+
+class ADMM:
+    def __init__(self, data):
+        """
+        稀疏线性算法。
+
+        :param data: 无上下文信息的隐性反馈数据集，包括训练集，测试集等
+        """
+        self.data = data
+
+        print('ADMM')
+
+        self.A = self.__user_item_matrix()  # 用户-物品行为矩阵
+        self.lambda2= None
+        self.lambda1= None
+        self.rho= None
+        self.alpha = None
+        self.lam_bda = None
+        self.max_iter = None  # 学习最大迭代次数
+        self.tol = None  # 学习阈值
+        self.N = None  # 每个用户最多推荐物品数量
+        self.lambda_is_ratio = None  # lambda参数是否代表比例值
+
+        self.W = None  # 系数集合
+        self.recommendation = None
+
+    def compute_recommendation(self, lambda2= 500, lambda1= 1, rho=10000, alpha=0.5, lam_bda=0.02, max_iter=5, tol=0.0001, N=10, adapting_rho=False):
+        """
+        开始计算推荐列表
+
+        :param alpha: lasso占比（为0只有ridge-regression，为1只有lasso）
+        :param lam_bda: elastic net系数
+        :param max_iter: 学习最大迭代次数
+        :param tol: 学习阈值
+        :param N: 每个用户最多推荐物品数量
+        :param lambda_is_ratio: lambda参数是否代表比例值。若为True，则运算时每列lambda单独计算；若为False，则运算时使用单一lambda的值
+        """
+        self.lambda2= lambda2
+        self.lambda1= lambda1
+        self.rho= rho
+
+        self.alpha = alpha
+        self.lam_bda = lam_bda
+        self.max_iter = max_iter
+        self.tol = tol
+        self.N = N
+
+        print('开始计算W矩阵（alpha=' + str(self.alpha) + ', lambda=' + str(self.lam_bda) + ', max_iter=' + str(
+            self.max_iter) + ', tol=' + str(self.tol) + '）')
+        #self.W = self.__aggregation_coefficients()  # 弃用了这个
+        self.W = self.admm()
+
+        print('开始计算推荐列表（N=' + str(self.N) + '）')
+        self.recommendation = self.__get_recommendation()
+
+
+    def __user_item_matrix(self):
+        A = numpy.zeros((self.data.num_user, self.data.num_item))
+        for user, item in self.data.train:
+            A[user, item] = 1
+        return A
+
+    def admm(self):
+        lambda2 = self.lambda2
+        lambda1 = self.lambda1
+        rho = self.rho
+
+        alpha = self.alpha
+        lam_bda = self.lam_bda 
+        max_iter = self.max_iter
+
+        e_abs = 10^(-4)
+        e_rel = 10^(-4)
+        
+        X = self.A
+        XtX = X.T.dot(X)
+        diag_indices = numpy.diag_indices(XtX.shape[0])  #创建一组索引以访问数组的对角线
+        
+        XtX[diag_indices] = XtX[diag_indices]+ lambda2 + rho 
+        P = numpy.linalg.inv(XtX) 
+        XtX[diag_indices] -= lambda2 + rho
+        B_aux = P.dot(XtX)
+
+        Gamma = numpy.zeros(XtX.shape, dtype=float) 
+        C = numpy.zeros(XtX.shape, dtype=float)
+        C_previous = numpy.zeros(XtX.shape, dtype=float)
+        count =0
+
+        while True: 
+          print("iter: ", count)
+          B_tilde = B_aux + P.dot(rho * C - Gamma) 
+          gamma = numpy.diag(B_tilde) / numpy.diag(P) 
+          B = B_tilde - P * gamma 
+          C = self.soft_thresholding(B + Gamma/rho, lambda1/rho) 
+          C = numpy.maximum(C, 0.) 
+          r_dual = -rho * (C - C_previous)
+          C_previous = copy.deepcopy(C)
+          Gamma += rho * (B - C)
+
+          e_primal = e_abs + e_rel * max(numpy.linalg.norm(B,ord="fro"),numpy.linalg.norm(C,ord="fro"))
+          e_dual = e_abs + e_rel * numpy.linalg.norm(Gamma,ord="fro")    
+          r_primal = B-C
+
+          if (numpy.linalg.norm(r_primal,ord="fro") <=e_primal and numpy.linalg.norm(r_dual,ord="fro") <=e_dual) or (count >= max_iter): 
+              return C
+
+          count += 1 
+
+    #改写了矩阵形式
+    def soft_thresholding(self,a,b):
+      # a is a matrix
+      for i in range(len(a)):
+        for j in range(len(a[0])):
+          temp = a[i][j]
+          if b >= abs(temp):
+              a[i][j] = 0
+          if temp > 0:
+              a[i][j] = temp - b
+          if temp < 0:
+              a[i][j] = 0
+      return a
+
+
+    def __aggregation_coefficients(self,lambda2= 500, lambda1= 1, rho=10000, alpha=0.5, lam_bda=0.02, max_iter=5):
+        
+
+        group_size = 100  # 并行计算每组计算的行/列数
+        n = self.data.num_item // group_size  # 并行计算分组个数
+        starts = []
+        ends = []
+        for i in range(n):
+            start = i * group_size
+            starts.append(start)
+            ends.append(start + group_size)
+        if self.data.num_item % group_size != 0:
+            starts.append(n * group_size)
+            ends.append(self.data.num_item)
+            n += 1
+
+
+        print('ADMM法学习W矩阵')
+        with ProcessPoolExecutor() as executor:
+            result = executor.map(self.admm())
+            #print("result",result)
+            return numpy.hstack(result)
+
+
+        # if self.lambda_is_ratio:
+        #     with ProcessPoolExecutor() as executor:
+        #         return numpy.hstack(executor.map(slim.coordinate_descent_lambda_ratio, [self.alpha] * n, [self.lam_bda] * n, [self.max_iter] * n, [self.tol] * n, [self.data.num_user] * n, [self.data.num_item] * n, [covariance_array] * n, starts, ends))
+        # else:
+        #     with ProcessPoolExecutor() as executor:
+        #         return numpy.hstack(executor.map(slim.coordinate_descent, [self.alpha] * n, [self.lam_bda] * n, [self.max_iter] * n, [self.tol] * n, [self.data.num_user] * n, [self.data.num_item] * n, [covariance_array] * n, starts, ends))
+
+    def __recommend(self, user_AW, user_item_set):
+        """
+        给用户user推荐最多N个物品。
+
+        :param user_AW: AW矩阵相乘的第user行
+        :param user_item_set: 训练集用户user所有有过正反馈的物品集合
+        :return: 推荐给本行用户的物品列表
+        """
+        rank = dict()
+        for i in set(range(self.data.num_item)) - user_item_set:
+            rank[i] = user_AW[i]
+        return [items[0] for items in sorted(rank.items(), key=operator.itemgetter(1), reverse=True)[:self.N]]
+
+    def __get_recommendation(self):
+        """
+        得到所有用户的推荐物品列表。
 
         :return: 推荐列表，下标i对应给用户i推荐的物品列表
         """
@@ -529,6 +717,7 @@ class SLIM:
         for user_AW, user_item_set in zip(AW, train_user_items):
             recommendation.append(self.__recommend(user_AW, user_item_set))
         return recommendation
+
 
 
 class Evaluation:
@@ -619,7 +808,7 @@ class Evaluation:
 
 
 if __name__ == '__main__':
-    algorithms = [UserCF, ItemCF, LFM, SLIM]
+    algorithms = [ADMM] #UserCF, ItemCF, LFM, SLIM, 
     precisions = []
     recalls = []
     coverages = []
@@ -631,7 +820,7 @@ if __name__ == '__main__':
     for algorithm in algorithms:
         startTime = time.time()
         recommend = algorithm(data)
-        recommend.compute_recommendation()
+        recommend.compute_recommendation(max_iter=10)
         eva = Evaluation(recommend)
         eva.evaluate()
         times.append('%.3fs' % (time.time() - startTime))
