@@ -581,8 +581,8 @@ class ADMM:
 
         print('开始计算W矩阵（alpha=' + str(self.alpha) + ', lambda=' + str(self.lam_bda) + ', max_iter=' + str(
             self.max_iter) + ', tol=' + str(self.tol) + '）')
-        #self.W = self.__aggregation_coefficients()  # 弃用了这个
-        self.W = self.admm()
+        self.W = self.__aggregation_coefficients()  # 弃用了这个
+        #self.W = self.admm()
 
         print('开始计算推荐列表（N=' + str(self.N) + '）')
         self.recommendation = self.__get_recommendation()
@@ -654,6 +654,54 @@ class ADMM:
               a[i][j] = 0
       return a
 
+    def admm_new(self,start,end):
+      # 还是有问题,主要还是矩阵的乘法部分不行
+        print(start,end)
+        lambda2 = self.lambda2
+        lambda1 = self.lambda1
+        rho = self.rho
+
+        alpha = self.alpha
+        lam_bda = self.lam_bda 
+        max_iter = self.max_iter
+
+        e_abs = 10^(-4)
+        e_rel = 10^(-4)
+        
+        X = self.A
+        XtX = X.T.dot(X)
+        diag_indices = numpy.diag_indices(XtX.shape[0])  #创建一组索引以访问数组的对角线
+        XtX[diag_indices] = XtX[diag_indices]+ lambda2 + rho 
+        P = numpy.linalg.inv(XtX) 
+        XtX[diag_indices] -= lambda2 + rho
+        B_aux = P.dot(XtX)[:,start:end]
+        P = P[:,start:end].T
+  
+        Gamma = numpy.zeros([XtX.shape[0],end-start], dtype=float) 
+        C = numpy.zeros([XtX.shape[0],end-start], dtype=float)
+        C_previous = numpy.zeros([XtX.shape[0],end-start], dtype=float)
+        count =0
+
+        while True: 
+          print("iter: ", count)
+          B_tilde = B_aux + P.dot(rho * C - Gamma) 
+          gamma = numpy.diag(B_tilde) / numpy.diag(P) 
+          B = B_tilde - P * gamma 
+          C = self.soft_thresholding(B + Gamma/rho, lambda1/rho) 
+          C = numpy.maximum(C, 0.) 
+          r_dual = -rho * (C - C_previous)
+          C_previous = copy.deepcopy(C)
+          Gamma += rho * (B - C)
+
+          e_primal = e_abs + e_rel * max(numpy.linalg.norm(B,ord="fro"),numpy.linalg.norm(C,ord="fro"))
+          e_dual = e_abs + e_rel * numpy.linalg.norm(Gamma,ord="fro")    
+          r_primal = B-C
+
+          if (numpy.linalg.norm(r_primal,ord="fro") <=e_primal and numpy.linalg.norm(r_dual,ord="fro") <=e_dual) or (count >= max_iter): 
+              return C
+
+          count += 1 
+
 
     def __aggregation_coefficients(self,lambda2= 500, lambda1= 1, rho=10000, alpha=0.5, lam_bda=0.02, max_iter=5):
         
@@ -670,21 +718,15 @@ class ADMM:
             starts.append(n * group_size)
             ends.append(self.data.num_item)
             n += 1
+        print("starts",starts)
+        print("ends",ends)
+
 
 
         print('ADMM法学习W矩阵')
         with ProcessPoolExecutor() as executor:
-            result = executor.map(self.admm())
-            #print("result",result)
-            return numpy.hstack(result)
+          return numpy.hstack(executor.map(self.admm_new, starts, ends))
 
-
-        # if self.lambda_is_ratio:
-        #     with ProcessPoolExecutor() as executor:
-        #         return numpy.hstack(executor.map(slim.coordinate_descent_lambda_ratio, [self.alpha] * n, [self.lam_bda] * n, [self.max_iter] * n, [self.tol] * n, [self.data.num_user] * n, [self.data.num_item] * n, [covariance_array] * n, starts, ends))
-        # else:
-        #     with ProcessPoolExecutor() as executor:
-        #         return numpy.hstack(executor.map(slim.coordinate_descent, [self.alpha] * n, [self.lam_bda] * n, [self.max_iter] * n, [self.tol] * n, [self.data.num_user] * n, [self.data.num_item] * n, [covariance_array] * n, starts, ends))
 
     def __recommend(self, user_AW, user_item_set):
         """
@@ -820,7 +862,7 @@ if __name__ == '__main__':
     for algorithm in algorithms:
         startTime = time.time()
         recommend = algorithm(data)
-        recommend.compute_recommendation(max_iter=10)
+        recommend.compute_recommendation(max_iter=2)
         eva = Evaluation(recommend)
         eva.evaluate()
         times.append('%.3fs' % (time.time() - startTime))
