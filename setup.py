@@ -7,4 +7,9 @@ setup(
     include_dirs = [numpy.get_include()]
 )
 
+setup(
+    ext_modules = cythonize("lfm.pyx"),
+    include_dirs = [numpy.get_include()]
+)
+
 #python setup.py build_ext --inplace
