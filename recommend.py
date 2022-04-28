@@ -581,8 +581,8 @@ class ADMM:
 
         print('开始计算W矩阵（alpha=' + str(self.alpha) + ', lambda=' + str(self.lam_bda) + ', max_iter=' + str(
             self.max_iter) + ', tol=' + str(self.tol) + '）')
-        self.W = self.__aggregation_coefficients()  # 弃用了这个
-        #self.W = self.admm()
+        # self.W = self.__aggregation_coefficients()  # 弃用了这个
+        self.W = self.admm()
 
         print('开始计算推荐列表（N=' + str(self.N) + '）')
         self.recommendation = self.__get_recommendation()
@@ -656,7 +656,7 @@ class ADMM:
 
     def admm_new(self,start,end):
       # 还是有问题,主要还是矩阵的乘法部分不行
-        print(start,end)
+        #print(start,end)
         lambda2 = self.lambda2
         lambda1 = self.lambda1
         rho = self.rho
@@ -673,9 +673,8 @@ class ADMM:
         diag_indices = numpy.diag_indices(XtX.shape[0])  #创建一组索引以访问数组的对角线
         XtX[diag_indices] = XtX[diag_indices]+ lambda2 + rho 
         P = numpy.linalg.inv(XtX) 
-        XtX[diag_indices] -= lambda2 + rho
-        B_aux = P.dot(XtX)[:,start:end]
-        P = P[:,start:end].T
+        # XtX[diag_indices] -= lambda2 + rho
+        # B_aux = P.dot(XtX)
   
         Gamma = numpy.zeros([XtX.shape[0],end-start], dtype=float) 
         C = numpy.zeros([XtX.shape[0],end-start], dtype=float)
@@ -683,10 +682,13 @@ class ADMM:
         count =0
 
         while True: 
-          print("iter: ", count)
+          #print("iter: ", count)
+          B_aux = P.dot(X.T.dot(X[:,start:end]))
           B_tilde = B_aux + P.dot(rho * C - Gamma) 
-          gamma = numpy.diag(B_tilde) / numpy.diag(P) 
-          B = B_tilde - P * gamma 
+          gamma = numpy.diag(B_tilde) / (numpy.diag(P)[start:end]) 
+          #print("gamma shape",gamma.shape)
+          #print("p shape",P.shape)
+          B = B_tilde - P[:,start:end] * gamma 
           C = self.soft_thresholding(B + Gamma/rho, lambda1/rho) 
           C = numpy.maximum(C, 0.) 
           r_dual = -rho * (C - C_previous)
@@ -862,7 +864,7 @@ if __name__ == '__main__':
     for algorithm in algorithms:
         startTime = time.time()
         recommend = algorithm(data)
-        recommend.compute_recommendation(max_iter=2)
+        recommend.compute_recommendation(max_iter=10)
         eva = Evaluation(recommend)
         eva.evaluate()
         times.append('%.3fs' % (time.time() - startTime))
