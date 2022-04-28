@@ -13,9 +13,10 @@ import lfm
 import slim
 
 pandas.set_option('display.max_columns', None)
+pandas.set_option('display.max_rows', None)
 
 class Data:
-    def __init__(self, dataset='ml-100k'):
+    def __init__(self, dataset='ml-1m'):
         """
         无上下文信息的隐性反馈数据集。
         :param dataset: 使用的数据集名字，当前有'ml-100k','ml-1m'
@@ -572,6 +573,7 @@ class ADMM:
         self.lambda2= lambda2
         self.lambda1= lambda1
         self.rho= rho
+        self.adapting_rho=adapting_rho
 
         self.alpha = alpha
         self.lam_bda = lam_bda
@@ -580,9 +582,9 @@ class ADMM:
         self.N = N
 
         print('开始计算W矩阵（alpha=' + str(self.alpha) + ', lambda=' + str(self.lam_bda) + ', max_iter=' + str(
-            self.max_iter) + ', tol=' + str(self.tol) + '）')
-        self.W = self.__aggregation_coefficients()  # 并行
-        #self.W = self.admm() # 不并行
+            self.max_iter) + ', tol=' + str(self.tol) + ', lambda_1=' + str(self.lambda1) +', lambda_2=' + str(self.lambda2) +'）')
+        #self.W = self.__aggregation_coefficients()  # 弃用了这个
+        self.W = self.admm()
 
         print('开始计算推荐列表（N=' + str(self.N) + '）')
         self.recommendation = self.__get_recommendation()
@@ -598,13 +600,14 @@ class ADMM:
         lambda2 = self.lambda2
         lambda1 = self.lambda1
         rho = self.rho
+        adapting_rho= self.adapting_rho
 
         alpha = self.alpha
         lam_bda = self.lam_bda 
         max_iter = self.max_iter
 
-        e_abs = 10^(-4)
-        e_rel = 10^(-4)
+        e_abs = 10**(-4)
+        e_rel = 10**(-4)
         
         X = self.A
         XtX = X.T.dot(X)
@@ -621,10 +624,9 @@ class ADMM:
         count =0
 
         while True: 
-          print("iter: ", count)
           B_tilde = B_aux + P.dot(rho * C - Gamma) 
           gamma = numpy.diag(B_tilde) / numpy.diag(P) 
-          B = B_tilde - P * numpy.diag(gamma) 
+          B = B_tilde - P * gamma 
           C = self.soft_thresholding(B + Gamma/rho, lambda1/rho) 
           C = numpy.maximum(C, 0.) 
           r_dual = -rho * (C - C_previous)
@@ -638,7 +640,14 @@ class ADMM:
           if (numpy.linalg.norm(r_primal,ord="fro") <=e_primal and numpy.linalg.norm(r_dual,ord="fro") <=e_dual) or (count >= max_iter): 
               return C
 
+          if adapting_rho == True:
+            if numpy.linalg.norm(r_primal,ord="fro") > 10* numpy.linalg.norm(r_dual,ord="fro"):
+              rho = 2* rho 
+            elif numpy.linalg.norm(r_primal,ord="fro") <10* numpy.linalg.norm(r_dual,ord="fro"):
+              rho = rho/2
+
           count += 1 
+        print("total iter: ", count)
 
     #改写了矩阵形式
     def soft_thresholding(self,a,b):
@@ -653,54 +662,6 @@ class ADMM:
           if temp < 0:
               a[i][j] = 0
       return a
-
-    def admm_new(self,shape,X,P,start,end):
-      # 还是有问题,主要还是矩阵的乘法部分不行
-        #print(start,end)
-        lambda2 = self.lambda2
-        lambda1 = self.lambda1
-        rho = self.rho
-
-        alpha = self.alpha
-        lam_bda = self.lam_bda 
-        max_iter = self.max_iter
-
-        e_abs = 10^(-4)
-        e_rel = 10^(-4)
-        
-        
-        # XtX[diag_indices] -= lambda2 + rho
-        # B_aux = P.dot(XtX)
-        
-        Gamma = numpy.zeros([shape,end-start], dtype=float) 
-        C = numpy.zeros([shape,end-start], dtype=float)
-        C_previous = numpy.zeros([shape,end-start], dtype=float)
-        count =0
-
-        while True: 
-          #print("iter: ", count)
-          B_aux = P.dot(X.T.dot(X[:,start:end]))
-          B_tilde = B_aux + P.dot(rho * C - Gamma) 
-          temp = numpy.diag(B_tilde[start:end,:]) / (numpy.diag(P)[start:end]) 
-          gamma = numpy.zeros([shape,end-start], dtype=float)
-          gamma[start:end,:] = numpy.diag(temp)
-          #print("gamma shape",gamma.shape)
-          #print("p shape",P.shape)
-          B = B_tilde - P[:,start:end] * gamma 
-          C = self.soft_thresholding(B + Gamma/rho, lambda1/rho) 
-          C = numpy.maximum(C, 0.) 
-          r_dual = -rho * (C - C_previous)
-          C_previous = copy.deepcopy(C)
-          Gamma += rho * (B - C)
-
-          e_primal = e_abs + e_rel * max(numpy.linalg.norm(B,ord="fro"),numpy.linalg.norm(C,ord="fro"))
-          e_dual = e_abs + e_rel * numpy.linalg.norm(Gamma,ord="fro")    
-          r_primal = B-C
-
-          if (numpy.linalg.norm(r_primal,ord="fro") <=e_primal and numpy.linalg.norm(r_dual,ord="fro") <=e_dual) or (count >= max_iter): 
-              return C
-
-          count += 1 
 
 
     def __aggregation_coefficients(self,lambda2= 500, lambda1= 1, rho=10000, alpha=0.5, lam_bda=0.02, max_iter=5):
@@ -718,21 +679,21 @@ class ADMM:
             starts.append(n * group_size)
             ends.append(self.data.num_item)
             n += 1
-        print("starts",starts)
-        print("ends",ends)
-
-        X = self.A
-        XtX = X.T.dot(X)
-        diag_indices = numpy.diag_indices(XtX.shape[0])  #创建一组索引以访问数组的对角线
-        XtX[diag_indices] = XtX[diag_indices]+ lambda2 + rho 
-        P = numpy.linalg.inv(XtX) 
-        shape = XtX.shape[0]
 
 
         print('ADMM法学习W矩阵')
         with ProcessPoolExecutor() as executor:
-          return numpy.hstack(executor.map(self.admm_new, [shape]*n,[X]*n,[P]*n,starts, ends))
+            result = executor.map(self.admm())
+            #print("result",result)
+            return numpy.hstack(result)
 
+
+        # if self.lambda_is_ratio:
+        #     with ProcessPoolExecutor() as executor:
+        #         return numpy.hstack(executor.map(slim.coordinate_descent_lambda_ratio, [self.alpha] * n, [self.lam_bda] * n, [self.max_iter] * n, [self.tol] * n, [self.data.num_user] * n, [self.data.num_item] * n, [covariance_array] * n, starts, ends))
+        # else:
+        #     with ProcessPoolExecutor() as executor:
+        #         return numpy.hstack(executor.map(slim.coordinate_descent, [self.alpha] * n, [self.lam_bda] * n, [self.max_iter] * n, [self.tol] * n, [self.data.num_user] * n, [self.data.num_item] * n, [covariance_array] * n, starts, ends))
 
     def __recommend(self, user_AW, user_item_set):
         """
@@ -864,26 +825,35 @@ if __name__ == '__main__':
     times = []
 
     data = Data()
+    lambda_1=[0, 0.1,0.5,1,2,3,4,5,10,20,50]
+    lambda_2=[0, 1,5,50,1000,5000]
+    combi = []
 
-    for algorithm in algorithms:
-        startTime = time.time()
-        recommend = algorithm(data)
-        recommend.compute_recommendation(lambda2= 500, lambda1= 1, rho=10000, alpha=0.5, lam_bda=0.02, max_iter=20, tol=0.0001, N=10, adapting_rho=False)
-        eva = Evaluation(recommend)
-        eva.evaluate()
-        times.append('%.3fs' % (time.time() - startTime))
-        precisions.append('%.3f%%' % (eva.precision * 100))
-        recalls.append('%.3f%%' % (eva.recall * 100))
-        coverages.append('%.3f%%' % (eva.coverage * 100))
-        popularities.append(eva.popularity)
+    for l1 in lambda_1:
+      for l2 in lambda_2:
+        for algorithm in algorithms:
+          startTime = time.time()
+          recommend = algorithm(data)
+          recommend.compute_recommendation(max_iter=50,lambda2=l2,lambda1=l1,adapting_rho=True,rho=2000)
+          eva = Evaluation(recommend)
+          eva.evaluate()
+          times.append('%.3fs' % (time.time() - startTime))
+          precisions.append('%.3f%%' % (eva.precision * 100))
+          recalls.append('%.3f%%' % (eva.recall * 100))
+          coverages.append('%.3f%%' % (eva.coverage * 100))
+          popularities.append(eva.popularity)
+          combi.append(str(l1)+' ,' + str(l2))
+
 
     df = pandas.DataFrame()
-    df['algorithm'] = [algorithm.__name__ for algorithm in algorithms]
+    df['commbi'] = combi
+    #df['algorithm'] = [algorithm.__name__ for algorithm in algorithms]
     df['precision'] = precisions
     df['recall'] = recalls
     df['coverage'] = coverages
     df['popularity'] = popularities
     df['time'] = times
+    
     print(df)
 
     # recommend = SLIM(Data())
