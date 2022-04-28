@@ -6,6 +6,7 @@ import numpy
 import pandas
 from concurrent.futures import ProcessPoolExecutor
 import copy
+from google.colab import files 
 
 # 以下两个包的import报错可以无视，只要相同目录下有slim.cp36-win_amd64.pyd和lfm.cp36-win_amd64.pyd这两个文件即可
 
@@ -622,6 +623,7 @@ class ADMM:
         C = numpy.zeros(XtX.shape, dtype=float)
         C_previous = numpy.zeros(XtX.shape, dtype=float)
         count =0
+        n = XtX.shape[0]
 
         while True: 
           B_tilde = B_aux + P.dot(rho * C - Gamma) 
@@ -633,11 +635,12 @@ class ADMM:
           C_previous = copy.deepcopy(C)
           Gamma += rho * (B - C)
 
-          e_primal = e_abs + e_rel * max(numpy.linalg.norm(B,ord="fro"),numpy.linalg.norm(C,ord="fro"))
-          e_dual = e_abs + e_rel * numpy.linalg.norm(Gamma,ord="fro")    
+          e_primal = n*e_abs + e_rel * max(numpy.linalg.norm(B,ord="fro"),numpy.linalg.norm(C,ord="fro"))
+          e_dual = n*e_abs + e_rel * numpy.linalg.norm(Gamma,ord="fro")    
           r_primal = B-C
 
           if (numpy.linalg.norm(r_primal,ord="fro") <=e_primal and numpy.linalg.norm(r_dual,ord="fro") <=e_dual) or (count >= max_iter): 
+              print("total iter: ", count)
               return C
 
           if adapting_rho == True:
@@ -647,7 +650,7 @@ class ADMM:
               rho = rho/2
 
           count += 1 
-        print("total iter: ", count)
+  
 
     #改写了矩阵形式
     def soft_thresholding(self,a,b):
@@ -825,8 +828,8 @@ if __name__ == '__main__':
     times = []
 
     data = Data()
-    lambda_1=[0, 0.1,0.5,1,2,3,4,5,10,20,50]
-    lambda_2=[0, 1,5,50,1000,5000]
+    lambda_1=[0, 0.1,0.5,1,2,3,4,5,10,20,50] # 11
+    lambda_2=[0, 1,5,50,1000,5000] # 6
     combi = []
 
     for l1 in lambda_1:
@@ -834,7 +837,7 @@ if __name__ == '__main__':
         for algorithm in algorithms:
           startTime = time.time()
           recommend = algorithm(data)
-          recommend.compute_recommendation(max_iter=50,lambda2=l2,lambda1=l1,adapting_rho=True,rho=2000)
+          recommend.compute_recommendation(max_iter=50,lambda2=l2,lambda1=l1,adapting_rho=True,rho=10000)
           eva = Evaluation(recommend)
           eva.evaluate()
           times.append('%.3fs' % (time.time() - startTime))
@@ -853,8 +856,12 @@ if __name__ == '__main__':
     df['coverage'] = coverages
     df['popularity'] = popularities
     df['time'] = times
-    
     print(df)
+
+    df.to_csv("/content/result.csv")
+    files.download('/content/result.csv') 
+    
+
 
     # recommend = SLIM(Data())
     # recommend.compute_recommendation()
