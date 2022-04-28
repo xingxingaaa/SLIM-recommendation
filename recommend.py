@@ -581,8 +581,8 @@ class ADMM:
 
         print('开始计算W矩阵（alpha=' + str(self.alpha) + ', lambda=' + str(self.lam_bda) + ', max_iter=' + str(
             self.max_iter) + ', tol=' + str(self.tol) + '）')
-        # self.W = self.__aggregation_coefficients()  # 弃用了这个
-        self.W = self.admm()
+        self.W = self.__aggregation_coefficients()  # 并行
+        #self.W = self.admm() # 不并行
 
         print('开始计算推荐列表（N=' + str(self.N) + '）')
         self.recommendation = self.__get_recommendation()
@@ -624,7 +624,7 @@ class ADMM:
           print("iter: ", count)
           B_tilde = B_aux + P.dot(rho * C - Gamma) 
           gamma = numpy.diag(B_tilde) / numpy.diag(P) 
-          B = B_tilde - P * gamma 
+          B = B_tilde - P * numpy.diag(gamma) 
           C = self.soft_thresholding(B + Gamma/rho, lambda1/rho) 
           C = numpy.maximum(C, 0.) 
           r_dual = -rho * (C - C_previous)
@@ -654,7 +654,7 @@ class ADMM:
               a[i][j] = 0
       return a
 
-    def admm_new(self,start,end):
+    def admm_new(self,shape,X,P,start,end):
       # 还是有问题,主要还是矩阵的乘法部分不行
         #print(start,end)
         lambda2 = self.lambda2
@@ -668,24 +668,22 @@ class ADMM:
         e_abs = 10^(-4)
         e_rel = 10^(-4)
         
-        X = self.A
-        XtX = X.T.dot(X)
-        diag_indices = numpy.diag_indices(XtX.shape[0])  #创建一组索引以访问数组的对角线
-        XtX[diag_indices] = XtX[diag_indices]+ lambda2 + rho 
-        P = numpy.linalg.inv(XtX) 
+        
         # XtX[diag_indices] -= lambda2 + rho
         # B_aux = P.dot(XtX)
-  
-        Gamma = numpy.zeros([XtX.shape[0],end-start], dtype=float) 
-        C = numpy.zeros([XtX.shape[0],end-start], dtype=float)
-        C_previous = numpy.zeros([XtX.shape[0],end-start], dtype=float)
+        
+        Gamma = numpy.zeros([shape,end-start], dtype=float) 
+        C = numpy.zeros([shape,end-start], dtype=float)
+        C_previous = numpy.zeros([shape,end-start], dtype=float)
         count =0
 
         while True: 
           #print("iter: ", count)
           B_aux = P.dot(X.T.dot(X[:,start:end]))
           B_tilde = B_aux + P.dot(rho * C - Gamma) 
-          gamma = numpy.diag(B_tilde) / (numpy.diag(P)[start:end]) 
+          temp = numpy.diag(B_tilde[start:end,:]) / (numpy.diag(P)[start:end]) 
+          gamma = numpy.zeros([shape,end-start], dtype=float)
+          gamma[start:end,:] = numpy.diag(temp)
           #print("gamma shape",gamma.shape)
           #print("p shape",P.shape)
           B = B_tilde - P[:,start:end] * gamma 
@@ -723,11 +721,17 @@ class ADMM:
         print("starts",starts)
         print("ends",ends)
 
+        X = self.A
+        XtX = X.T.dot(X)
+        diag_indices = numpy.diag_indices(XtX.shape[0])  #创建一组索引以访问数组的对角线
+        XtX[diag_indices] = XtX[diag_indices]+ lambda2 + rho 
+        P = numpy.linalg.inv(XtX) 
+        shape = XtX.shape[0]
 
 
         print('ADMM法学习W矩阵')
         with ProcessPoolExecutor() as executor:
-          return numpy.hstack(executor.map(self.admm_new, starts, ends))
+          return numpy.hstack(executor.map(self.admm_new, [shape]*n,[X]*n,[P]*n,starts, ends))
 
 
     def __recommend(self, user_AW, user_item_set):
@@ -864,7 +868,7 @@ if __name__ == '__main__':
     for algorithm in algorithms:
         startTime = time.time()
         recommend = algorithm(data)
-        recommend.compute_recommendation(max_iter=10)
+        recommend.compute_recommendation(lambda2= 500, lambda1= 1, rho=10000, alpha=0.5, lam_bda=0.02, max_iter=20, tol=0.0001, N=10, adapting_rho=False)
         eva = Evaluation(recommend)
         eva.evaluate()
         times.append('%.3fs' % (time.time() - startTime))
